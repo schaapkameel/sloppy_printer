@@ -1,0 +1,225 @@
+//6-1-2021
+/*
+ *!!!  V01!!! : x and y position in mm and intensity is send to the arduino. The arduino moves to this position and begins to use the intensity to draw.
+ * This makes the code more versatile, since alterations need only to be done in processing to get different effects
+ * 
+ large sloppy printer with two geared stepper motors
+ potmeter for darkness controll - A0
+ limit switches on A1, A2 with internal pullup - LOW is pressed
+ 204800 steps is 16 cm
+ max travel x (the bridge) is 76 cm, possibly more when changing the sliding block
+ max travel y (the plate) is 110 cm, because the plate itself is 122
+ D12-D2 are possible outputs, use 12-5 for the two stepper motors
+ d4-2 possible output for two motors
+ arduino powered from laptop connection. carefull with using the 5 v
+ 2048 steps per revolution
+ */
+#include <Stepper.h>
+const int steps_per_mm = 204800/1600 ;
+const int steps_per_revolution = 2048;  // change this to fit the number of steps per revolution
+const int max_steps_x = 972800;         // 76/16 * 204800
+const int max_steps_y = 1408000;        //  110/16 *204800
+const int draw_pin = 2;
+const int draw_pin_2 = 3;               //for when needed to have an extra motor
+Stepper motor_y (steps_per_revolution, 9, 11,10, 12); // initialize the stepper library on pins D5 through D12:
+Stepper motor_x (steps_per_revolution, 5,  7,  6, 8);
+
+//sensor pins
+const int pot = A0;
+const int x_limit_switch = A2;
+const int y_limit_switch = A1;
+
+//variables used:
+int pix_size = 10;            // in mm
+int pos_x = 0;                          //these hold the actual position
+int pos_y = 0;
+int max_draw_time = 100;                    // how long the pencil is bouncing around on a single pixel, mapped to potmeter
+unsigned long old_time = 0;
+int select = 0;
+bool set_WH = false;
+int height = 0;                         //holds the height/weight in mm
+int width = 0;
+int data = 0;
+
+// these hold the goal position
+int x = 0;
+int y = 0;
+  
+void setup() {
+  motor_x.setSpeed(10);
+  motor_y.setSpeed(10);
+  Serial.begin(9600);
+  for(int i = 2; i<13; i++){
+    pinMode(i, OUTPUT);
+    }         // set pins 3-12 to output
+  pinMode(pot, INPUT);
+  pinMode(x_limit_switch, INPUT_PULLUP);   // low is pressed
+  pinMode(y_limit_switch, INPUT_PULLUP);
+
+  while(digitalRead(x_limit_switch) == HIGH){
+    motor_x.step(1);                      //return carriage to zero x position
+  }
+  while(digitalRead(y_limit_switch) == HIGH){
+    motor_y.step(-1);                      //return carriage to zero y position
+  }
+}
+
+void loop() {
+  // first get the size of the canvas in mm from the processing sketch
+  while(!set_WH){
+    set_size();
+  }
+  Serial.print("x");    // arduino says give me x
+  while(!getByte()){    //wait for the data
+  x = data;
+  }
+  Serial.print("y");    // arduino says give me x
+  while(!getByte()){    //wait for the data
+  y = data;
+  }
+  while(!pos(x, y)){
+    Serial.print("going to position x: ");
+    Serial.print(x);
+    Serial.print("y: ");
+    Serial.println(y);
+  }
+  // if reached, then proceed to draw.
+  Serial.print(">");    // arduino says go!
+  while(!getByte()){    //wait for the data
+  }
+  draw(); 
+
+  
+}
+
+boolean getByte(){
+  if(Serial.available()>0){    //check if there is data
+    delay(10);
+    data = Serial.parseInt(); // get array and store in data
+    delay(10);
+    Serial.println(data);
+    return true;
+  }
+  else{
+    return false;
+  }
+}
+
+void draw(){
+  int intensity  = data;
+  int draw_time = map(analogRead(pot), 0, 1023, 50, max_draw_time);
+  int on = map(intensity, 255, 0, 0, draw_time); 
+  if(on>10){
+    digitalWrite(draw_pin, HIGH);
+    delay(on);
+    digitalWrite(draw_pin, LOW);
+  }
+}
+
+boolean pos(int x, int y){
+  if(digitalRead(x_limit_switch) == LOW){
+    pos_x = 0;
+  }
+   if(digitalRead(y_limit_switch) == LOW){
+    pos_y = 0;
+  }
+  if(pos_y <y){
+    motor_y.step(1*steps_per_mm);
+    pos_y++;
+  }
+  else if(pos_y> y){           
+    motor_y.step(-1*steps_per_mm);
+    pos_y--;
+  }
+  if(pos_x < x){ 
+     motor_x.step(-1*steps_per_mm);
+     pos_x++; 
+  }
+  else if(pos_x > x ){ 
+     motor_x.step(1*steps_per_mm);
+     pos_x--;
+  }
+  //----------------------- check if position is reached, then return true
+  if (pos_x == x and pos_y == y){
+    return true;
+  }
+  else{
+    return false;
+  }
+  }
+
+void set_size(){
+  Serial.print("<");
+    delay(1000);
+    if(getByte()){
+      if(select ==0){
+        max_draw_time = data;
+        Serial.print("max draw time= ");
+        Serial.print(max_draw_time);
+        Serial.print(" ms");
+        select = 1;
+      }
+      if(select ==1){
+        width = data;
+        Serial.print("width = ");
+        Serial.print(width);
+        Serial.print(" mm");
+        select = 2;
+      }
+      else if (select ==2){
+        height = data;
+        Serial.print(" ,Height = ");
+        Serial.print(height);
+        Serial.print(" mm");
+        select = 3;
+        set_WH = true;
+      }
+    }
+}
+
+
+const byte numChars = 32;
+char receivedChars[numChars];   // an array to store the received data
+
+boolean newData = false;
+
+void setup() {
+    Serial.begin(9600);
+    Serial.println("<Arduino is ready>");
+}
+
+void loop() {
+    get_data();
+    showNewData();
+}
+
+void get_data() {
+    static byte ndx = 0;
+    char endMarker = '\n';
+    char rc;
+    
+    while (Serial.available() > 0 && newData == false) {
+        rc = Serial.read();
+
+        if (rc != endMarker) {
+            receivedChars[ndx] = rc;
+            ndx++;
+            if (ndx >= numChars) {
+                ndx = numChars - 1;
+            }
+        }
+        else {
+            receivedChars[ndx] = '\0'; // terminate the string
+            ndx = 0;
+            newData = true;
+        }
+    }
+}
+
+void showNewData() {
+    if (newData == true) {
+        Serial.print("This just in ... ");
+        Serial.println(receivedChars);
+        newData = false;
+    }
+}
